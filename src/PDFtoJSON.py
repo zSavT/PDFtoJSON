@@ -2,14 +2,13 @@ import os
 import google.generativeai as genai
 import json
 import argparse
-from argparse_color_formatter import ColorHelpFormatter
+
 
 #--COSTANTI GLOBALI--
 DEFAULT_MODEL_NAME = "gemini-2.5-flash" # Modello Gemini predefinito
 
 
 def get_script_args_updated():
-    global script_args
     parser = argparse.ArgumentParser(
         description="Script per la conversione di un file PDF in un file JSON tramite AI.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -23,10 +22,11 @@ def get_script_args_updated():
     file_format_group = parser.add_argument_group('Configurazione File Input/Output')
     file_format_group.add_argument("--inputPDF", type=str, default="input",
                         help="Percorso della cartella dove è presente il file PDF.\nDefault: 'input'")
-    script_args = parsed_args
+    parsed_args = parser.parse_args()
     return parsed_args
 
 
 if __name__ == "__main__":
-  print("Hello")
-  args_parsed_main = get_script_args_updated()
+    print("Hello")
+    args_parsed_main = get_script_args_updated()
+    print(args_parsed_main)
