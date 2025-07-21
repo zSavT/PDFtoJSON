@@ -9,6 +9,7 @@ DEFAULT_MODEL_NAME = "gemini-2.5-flash" # Modello Gemini predefinito.
 
 # ----- Variabili Globali -----
 available_api_keys = []      # Lista API Caricate.
+current_api_key_index = 0    # Indice della API key corrente
 model = None                 # Modello Gemini
 
 def get_args_parsed_main_updated():
@@ -48,17 +49,22 @@ def initialize_api_keys_and_model(args_parsed_main):
     available_api_keys = [x for x in available_api_keys if not (x in seen or seen.add(x))]
     if not available_api_keys:
         print("Nessuna API key trovata. Specificare tramite --api o nel file 'api_key.txt'.")
-    
+        return False
+
     print(f"ℹ️  Totale API keys uniche disponibili: {len(available_api_keys)}.")
     current_api_key_index = 0
     try:
         current_key = available_api_keys[current_api_key_index]
         genai.configure(api_key=current_key)
         model = genai.GenerativeModel(args_parsed_main.model_name)
-        print(f"✅ Modello '{args_parsed_main.model_name}' inizializzato con API Key: ...{current_key[-4:]}")
+        print(f"Modello '{args_parsed_main.model_name}' inizializzato con API Key: ...{current_key[-4:]}")
+        return True
     except Exception as e:
         print(f"Errore durante l'inizializzazione del modello '{args_parsed_main.model_name}': {e}")
-    print("-" * 65)
+        model = None
+        return False
+    finally:
+        print("-" * 65)
 
 def rotate_api_key(args_parsed_main):
     global current_api_key_index, model
@@ -68,25 +74,62 @@ def rotate_api_key(args_parsed_main):
     previous_key_index = current_api_key_index
     current_api_key_index = (current_api_key_index + 1) % len(available_api_keys)
     new_api_key = available_api_keys[current_api_key_index]
-    print("Rotazione API key...")
+    print(f"Rotazione API key dalla {previous_key_index+1}° alla {current_api_key_index+1}°...")
     try:
         genai.configure(api_key=new_api_key)
         model = genai.GenerativeModel(args_parsed_main.model_name)
-        print(f"✅ API key ruotata e modello '{args_parsed_main.model_name}' riconfigurato.")
+        print(f"API key ruotata e modello '{args_parsed_main.model_name}' riconfigurato.")
         return True
     except Exception as e:
-        print(f"❌ ERRORE: Configurazione nuova API Key fallita: {e}")
+        print(f"ERRORE: Configurazione nuova API Key fallita: {e}")
         current_api_key_index = previous_key_index
         try:
             genai.configure(api_key=available_api_keys[previous_key_index])
             model = genai.GenerativeModel(args_parsed_main.model_name)
-            print("✅ API Key precedente ripristinata.")
+            print("API Key precedente ripristinata.")
         except Exception as e_revert:
-             print(f"Errore nel ripristino della API Key precedente.")
+             print(f"Errore nel ripristino della API Key precedente: {e_revert}")
         return False
+
+def start_gemini_chat(prompt: str, max_attempts: int = 3) -> str | None:
+    global model
+    if model is None:
+        print("Errore: Il modello Gemini non è stato inizializzato. Impossibile avviare la chat.")
+        return None
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            print(f"\n--- Avvio chat con Gemini (Tentativo {attempt + 1}/{max_attempts}) ---")
+            chat = model.start_chat(history=[])
+            response = chat.send_message(prompt)
+            print("Risposta da Gemini ricevuta.")
+            return response.text
+        except Exception as e:
+            print(f"Errore durante la comunicazione con Gemini: {e}")
+            if len(available_api_keys) > 1 and attempt < max_attempts - 1:
+                print("Tentativo di rotazione della API key...")
+                if rotate_api_key(get_args_parsed_main_updated()): 
+                    print("API Key ruotata con successo. Riprovo la chat.")
+                else:
+                    print("Rotazione API Key fallita. Non posso riprovare.")
+                    return None
+            else:
+                print("Nessun'altra API key disponibile o raggiunto il numero massimo di tentativi.")
+                return None
+        finally:
+            attempt += 1
+    return None # Tutti i tentativi sono falliti
 
 
 if __name__ == "__main__":
-    args_parsed_main = get_args_parsed_main_updated()
-    initialize_api_keys_and_model(args_parsed_main)
-    rotate_api_key(args_parsed_main)
+    args = get_args_parsed_main_updated()
+    if initialize_api_keys_and_model(args):
+        test_prompt = "Ciao Gemini, come stai oggi? Puoi dirmi una curiosità sul sistema solare?"
+        response_text = start_gemini_chat(test_prompt)
+        if response_text:
+            print("\n--- Risposta Finale da Gemini ---")
+            print(response_text)
+        else:
+            print("\nNon è stato possibile ottenere una risposta da Gemini dopo vari tentativi.")
+    else:
+        print("Impossibile procedere senza un'inizializzazione valida dell'API Gemini.")
