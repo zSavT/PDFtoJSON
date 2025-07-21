@@ -11,6 +11,8 @@ DEFAULT_MODEL_NAME = "gemini-2.5-flash" # Modello Gemini predefinito.
 available_api_keys = []      # Lista API Caricate.
 current_api_key_index = 0    # Indice della API key corrente
 model = None                 # Modello Gemini
+current_chat_session = None  # Variabile globale per la sessione di chat corrente
+
 
 def get_args_parsed_main_updated():
     parser = argparse.ArgumentParser(
@@ -50,8 +52,7 @@ def initialize_api_keys_and_model(args_parsed_main):
     if not available_api_keys:
         print("Nessuna API key trovata. Specificare tramite --api o nel file 'api_key.txt'.")
         return False
-
-    print(f"ℹ️  Totale API keys uniche disponibili: {len(available_api_keys)}.")
+    print(f"Totale API keys uniche disponibili: {len(available_api_keys)}.")
     current_api_key_index = 0
     try:
         current_key = available_api_keys[current_api_key_index]
@@ -69,7 +70,7 @@ def initialize_api_keys_and_model(args_parsed_main):
 def rotate_api_key(args_parsed_main):
     global current_api_key_index, model
     if len(available_api_keys) <= 1:
-        print("⚠️  Solo una API key disponibile. Impossibile ruotare.")
+        print("Solo una API key disponibile. Impossibile ruotare.")
         return False
     previous_key_index = current_api_key_index
     current_api_key_index = (current_api_key_index + 1) % len(available_api_keys)
@@ -91,24 +92,24 @@ def rotate_api_key(args_parsed_main):
              print(f"Errore nel ripristino della API Key precedente: {e_revert}")
         return False
 
-def start_gemini_chat(prompt: str, max_attempts: int = 3) -> str | None:
-    global model
+def start_gemini_chat(initial_prompt: str, max_attempts: int = 3) -> str | None:
+    global model, current_chat_session
     if model is None:
         print("Errore: Il modello Gemini non è stato inizializzato. Impossibile avviare la chat.")
         return None
     attempt = 0
     while attempt < max_attempts:
         try:
-            print(f"\n--- Avvio chat con Gemini (Tentativo {attempt + 1}/{max_attempts}) ---")
-            chat = model.start_chat(history=[])
-            response = chat.send_message(prompt)
+            print(f"\n--- Avvio nuova chat con Gemini (Tentativo {attempt + 1}/{max_attempts}) ---")
+            current_chat_session = model.start_chat(history=[])
+            response = current_chat_session.send_message(initial_prompt)
             print("Risposta da Gemini ricevuta.")
             return response.text
         except Exception as e:
             print(f"Errore durante la comunicazione con Gemini: {e}")
             if len(available_api_keys) > 1 and attempt < max_attempts - 1:
                 print("Tentativo di rotazione della API key...")
-                if rotate_api_key(get_args_parsed_main_updated()): 
+                if rotate_api_key(get_args_parsed_main_updated()):
                     print("API Key ruotata con successo. Riprovo la chat.")
                 else:
                     print("Rotazione API Key fallita. Non posso riprovare.")
@@ -121,15 +122,101 @@ def start_gemini_chat(prompt: str, max_attempts: int = 3) -> str | None:
     return None # Tutti i tentativi sono falliti
 
 
+def continue_gemini_chat(message: str, max_attempts: int = 3) -> str | None:
+    global current_chat_session, model
+
+    if current_chat_session is None:
+        print("Errore: Nessuna sessione di chat Gemini attiva. Si prega di avviare una chat per prima cosa.")
+        return None
+    if model is None:
+        print("Errore: Il modello Gemini non è stato inizializzato. Impossibile continuare la chat.")
+        return None
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            print(f"\n--- Continuo chat con Gemini (Tentativo {attempt + 1}/{max_attempts}) ---")
+            response = current_chat_session.send_message(message)
+            print("Risposta da Gemini ricevuta.")
+            return response.text
+        except Exception as e:
+            print(f"Errore durante la comunicazione con Gemini: {e}")
+            if len(available_api_keys) > 1 and attempt < max_attempts - 1:
+                print("Tentativo di rotazione della API key...")
+                if rotate_api_key(get_args_parsed_main_updated()):
+                    print("API Key ruotata con successo. Riprovo la chat.")
+                    if current_chat_session and hasattr(current_chat_session, 'history'):
+                        temp_history = list(current_chat_session.history)
+                        current_chat_session = model.start_chat(history=temp_history)
+                        print("Sessione chat ripristinata con la cronologia precedente.")
+                    else:
+                        current_chat_session = model.start_chat(history=[])
+                        print("Sessione chat riavviata (nessuna cronologia precedente trovata).")
+                else:
+                    print("Rotazione API Key fallita. Non posso riprovare.")
+                    return None
+            else:
+                print("Nessun'altra API key disponibile o raggiunto il numero massimo di tentativi.")
+                return None
+        finally:
+            attempt += 1
+    return None # Tutti i tentativi sono falliti
+
+
+def end_gemini_chat():
+    global current_chat_session
+    if current_chat_session is not None:
+        current_chat_session = None
+        print("\n--- Sessione di chat Gemini terminata. ---")
+    else:
+        print("\nNessuna sessione di chat Gemini attiva da terminare.")
+
+
 if __name__ == "__main__":
     args = get_args_parsed_main_updated()
     if initialize_api_keys_and_model(args):
-        test_prompt = "Ciao Gemini, come stai oggi? Puoi dirmi una curiosità sul sistema solare?"
-        response_text = start_gemini_chat(test_prompt)
+        # --- Esempio di utilizzo della funzione start_gemini_chat ---
+        initial_prompt = "Ciao Gemini, puoi darmi una curiosità sul sistema solare?"
+        response_text = start_gemini_chat(initial_prompt)
+
         if response_text:
-            print("\n--- Risposta Finale da Gemini ---")
+            print("\n--- Risposta Iniziale da Gemini ---")
             print(response_text)
+
+            # --- Esempio di utilizzo della funzione continue_gemini_chat ---
+            second_message = "Interessante! E qual è il pianeta più grande?"
+            response_text_2 = continue_gemini_chat(second_message)
+
+            if response_text_2:
+                print("\n--- Risposta Continua da Gemini ---")
+                print(response_text_2)
+
+                # --- Un altro messaggio per continuare ---
+                third_message = "E quale il più piccolo?"
+                response_text_3 = continue_gemini_chat(third_message)
+
+                if response_text_3:
+                    print("\n--- Risposta Continua da Gemini (2) ---")
+                    print(response_text_3)
+            else:
+                print("\nNon è stato possibile ottenere una risposta di continuazione da Gemini.")
         else:
-            print("\nNon è stato possibile ottenere una risposta da Gemini dopo vari tentativi.")
+            print("\nNon è stato possibile ottenere una risposta iniziale da Gemini dopo vari tentativi.")
+
+        # --- Esempio di utilizzo della funzione end_gemini_chat ---
+        end_gemini_chat()
+
+        # Tentativo di continuare una chat dopo averla terminata (dovrebbe dare errore)
+        print("\n--- Tentativo di continuare una chat dopo averla terminata ---")
+        response_after_end = continue_gemini_chat("Questo messaggio non dovrebbe andare a buon fine.")
+        if response_after_end is None:
+            print("Confermato: non è possibile continuare una chat terminata.")
+
+        # Avvio di una nuova chat dopo averne terminata una
+        print("\n--- Avvio di una nuova chat dopo averne terminata una ---")
+        new_chat_response = start_gemini_chat("Inizia una nuova conversazione: qual è la capitale dell'Italia?")
+        if new_chat_response:
+            print("\n--- Risposta Nuova Chat ---")
+            print(new_chat_response)
+
     else:
         print("Impossibile procedere senza un'inizializzazione valida dell'API Gemini.")
