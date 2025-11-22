@@ -2,6 +2,8 @@ import os
 import google.generativeai as genai
 import json
 import argparse
+import fitz  # PyMuPDF
+import re
 
 
 # ----- COSTANTI GLOBALI -----
@@ -27,7 +29,11 @@ def get_args_parsed_main_updated():
                         help=f"Nome del modello Gemini da utilizzare (es. 'gemini-1.5-pro', '{DEFAULT_MODEL_NAME}').\nDefault: '{DEFAULT_MODEL_NAME}'")
     file_format_group = parser.add_argument_group('Configurazione File Input/Output')
     file_format_group.add_argument("--inputPDF", type=str, default="input",
-                        help="Percorso della cartella dove è presente il file PDF.\nDefault: 'input'")
+                        help="Percorso della cartella di input contenente i file PDF.\nDefault: 'input'")
+    file_format_group.add_argument("--outputJSON", type=str, default="output",
+                        help="Percorso della cartella di output per i file JSON.\nDefault: 'output'")
+    file_format_group.add_argument("--json-template", type=str,
+                        help="Percorso di un file .txt o .json contenente la struttura JSON da usare come template nel prompt.")
     parsed_args = parser.parse_args()
     return parsed_args
 
@@ -122,7 +128,7 @@ def start_gemini_chat(initial_prompt: str, max_attempts: int = 3) -> str | None:
     return None # Tutti i tentativi sono falliti
 
 
-def continue_gemini_chat(message: str, max_attempts: int = 3) -> str | None:
+def continue_gemini_chat(message: str, args, max_attempts: int = 3) -> str | None:
     global current_chat_session, model
 
     if current_chat_session is None:
@@ -171,52 +177,109 @@ def end_gemini_chat():
         print("\nNessuna sessione di chat Gemini attiva da terminare.")
 
 
+def process_pdf_to_json(args):
+    """
+    Funzione principale che orchestra il processo di conversione da PDF a JSON.
+    """
+    input_dir = args.inputPDF
+    output_dir = args.outputJSON
+
+    if not os.path.isdir(input_dir):
+        print(f"ERRORE: La cartella di input '{input_dir}' non esiste.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    pdf_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.pdf')]
+    if not pdf_files:
+        print(f"Nessun file PDF trovato nella cartella '{input_dir}'.")
+        return
+
+    print(f"\nTrovati {len(pdf_files)} file PDF da processare.")
+
+    for pdf_file in pdf_files:
+        pdf_path = os.path.join(input_dir, pdf_file)
+        json_filename = os.path.splitext(pdf_file)[0] + ".json"
+        json_path = os.path.join(output_dir, json_filename)
+
+        print(f"\n--- Processo il file: {pdf_file} ---")
+
+        try:
+            with fitz.open(pdf_path) as doc:
+                pdf_text = "".join(page.get_text() for page in doc)
+        except Exception as e:
+            print(f"Errore durante la lettura del file PDF '{pdf_file}': {e}")
+            continue # Salta al prossimo file
+
+        # Carica la struttura JSON dal file template, se specificato
+        json_structure_description = ""
+        if args.json_template:
+            if os.path.exists(args.json_template):
+                with open(args.json_template, 'r', encoding='utf-8') as f:
+                    json_structure_description = f.read()
+                print(f"Utilizzo della struttura JSON dal template: {args.json_template}")
+            else:
+                print(f"ERRORE: Il file template JSON '{args.json_template}' non è stato trovato. Impossibile procedere.")
+                continue # Salta al prossimo file PDF
+        else:
+            print("ERRORE: Nessun template JSON fornito. Usa l'argomento --json-template per specificare un file con la struttura desiderata.")
+            # Interrompiamo l'elaborazione di tutti i file se manca il template
+            return
+
+        prompt = f"""
+        Sei un assistente esperto nell'estrazione di dati e nella loro conversione in formato JSON.
+
+        Analizza il testo seguente, che proviene da un documento di un prodotto finanziario (come un KIID o un Factsheet), ed estrai le informazioni richieste.
+        Il tuo compito è popolare la struttura JSON fornita con i dati estratti dal testo.
+
+        REGOLE IMPORTANTI:
+        1. **Struttura Esatta**: La tua risposta DEVE seguire esattamente la struttura JSON definita qui sotto. Non aggiungere o rimuovere chiavi.
+        2. **Tipi di Dati**: Rispetta i tipi di dato specificati (string, number). Per i numeri, non usare le virgolette.
+        3. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente (non la stringa "null").
+        4. **Formato Data**: Dove richiesto, formatta le date come YYYY-MM-DD, se possibile.
+        5. **Risposta Pulita**: La tua risposta deve contenere SOLO ed ESCLUSIVAMENTE il codice JSON. Non includere spiegazioni, commenti, o la marcatura ```json.
+
+        ---
+        STRUTTURA JSON DA POPOLARE:
+        {json_structure_description}
+        ---
+        TESTO DEL DOCUMENTO DA ANALIZZARE:
+        {pdf_text}
+        ---
+        """
+
+        json_response_text = start_gemini_chat(prompt)
+        end_gemini_chat() # Termina la chat per processare ogni file indipendentemente
+
+        if json_response_text:
+            # Pulisce la risposta per estrarre solo il JSON
+            # IA dovrebbe restituire solo JSON, ma teniamo il cleaning per sicurezza.
+            match = re.search(r'```json\s*([\s\S]*?)\s*```|({[\s\S]*})', json_response_text)
+            if match:
+                # Prendi il primo gruppo non nullo (o il contenuto del ```json``` o il JSON stesso)
+                json_data_str = next((g for g in match.groups() if g is not None), json_response_text)
+            else:
+                json_data_str = json_response_text # Prova a usare la risposta così com'è
+
+            json_data_str = json_data_str.strip()
+
+            try:
+                json_data = json.loads(json_data_str)
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=4, ensure_ascii=False)
+                print(f"File JSON salvato con successo in: {json_path}")
+            except json.JSONDecodeError:
+                print(f"ERRORE: La risposta da Gemini per '{pdf_file}' non è un JSON valido.")
+                # Opzionale: salva la risposta grezza per il debug
+                with open(json_path + ".error.txt", 'w', encoding='utf-8') as f:
+                    f.write(json_response_text)
+        else:
+            print(f"Non è stato possibile ottenere una risposta da Gemini per il file '{pdf_file}'.")
+
+
 if __name__ == "__main__":
     args = get_args_parsed_main_updated()
     if initialize_api_keys_and_model(args):
-        # --- Esempio di utilizzo della funzione start_gemini_chat ---
-        initial_prompt = "Ciao Gemini, puoi darmi una curiosità sul sistema solare?"
-        response_text = start_gemini_chat(initial_prompt)
-
-        if response_text:
-            print("\n--- Risposta Iniziale da Gemini ---")
-            print(response_text)
-
-            # --- Esempio di utilizzo della funzione continue_gemini_chat ---
-            second_message = "Interessante! E qual è il pianeta più grande?"
-            response_text_2 = continue_gemini_chat(second_message)
-
-            if response_text_2:
-                print("\n--- Risposta Continua da Gemini ---")
-                print(response_text_2)
-
-                # --- Un altro messaggio per continuare ---
-                third_message = "E quale il più piccolo?"
-                response_text_3 = continue_gemini_chat(third_message)
-
-                if response_text_3:
-                    print("\n--- Risposta Continua da Gemini (2) ---")
-                    print(response_text_3)
-            else:
-                print("\nNon è stato possibile ottenere una risposta di continuazione da Gemini.")
-        else:
-            print("\nNon è stato possibile ottenere una risposta iniziale da Gemini dopo vari tentativi.")
-
-        # --- Esempio di utilizzo della funzione end_gemini_chat ---
-        end_gemini_chat()
-
-        # Tentativo di continuare una chat dopo averla terminata (dovrebbe dare errore)
-        print("\n--- Tentativo di continuare una chat dopo averla terminata ---")
-        response_after_end = continue_gemini_chat("Questo messaggio non dovrebbe andare a buon fine.")
-        if response_after_end is None:
-            print("Confermato: non è possibile continuare una chat terminata.")
-
-        # Avvio di una nuova chat dopo averne terminata una
-        print("\n--- Avvio di una nuova chat dopo averne terminata una ---")
-        new_chat_response = start_gemini_chat("Inizia una nuova conversazione: qual è la capitale dell'Italia?")
-        if new_chat_response:
-            print("\n--- Risposta Nuova Chat ---")
-            print(new_chat_response)
-
+        process_pdf_to_json(args)
     else:
         print("Impossibile procedere senza un'inizializzazione valida dell'API Gemini.")
