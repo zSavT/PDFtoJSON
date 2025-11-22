@@ -34,6 +34,8 @@ def get_args_parsed_main_updated():
                         help="Percorso della cartella di output per i file JSON.\nDefault: 'output'")
     file_format_group.add_argument("--json-template", type=str,
                         help="Percorso di un file .txt o .json contenente la struttura JSON da usare come template nel prompt.")
+    file_format_group.add_argument("--no-json-template", action='store_true',
+                        help="Se attivo, non include la struttura JSON di esempio nel prompt, ma chiede all'AI di crearne una.")
     parsed_args = parser.parse_args()
     return parsed_args
 
@@ -211,38 +213,48 @@ def process_pdf_to_json(args):
             print(f"Errore durante la lettura del file PDF '{pdf_file}': {e}")
             continue # Salta al prossimo file
 
-        # Carica la struttura JSON dal file template, se specificato
+        # Gestione del template JSON e costruzione del prompt
         json_structure_description = ""
-        if args.json_template:
+        prompt_template_section = ""
+        prompt_rules_section = ""
+
+        if not args.no_json_template:
+            # Se il flag --no-json-template NON è attivo, carica il template
+            if not args.json_template:
+                print("ERRORE: Nessun template JSON fornito. Usa l'argomento --json-template o attiva --no-json-template.")
+                return # Interrompe l'elaborazione
+
             if os.path.exists(args.json_template):
                 with open(args.json_template, 'r', encoding='utf-8') as f:
                     json_structure_description = f.read()
                 print(f"Utilizzo della struttura JSON dal template: {args.json_template}")
+                prompt_template_section = f"""
+---
+STRUTTURA JSON DA POPOLARE:
+{json_structure_description}
+---"""
+                prompt_rules_section = """
+REGOLE IMPORTANTI:
+1. **Struttura Esatta**: La tua risposta DEVE seguire esattamente la struttura JSON definita. Non aggiungere o rimuovere chiavi.
+2. **Tipi di Dati**: Rispetta i tipi di dato specificati (string, number). Per i numeri, non usare le virgolette.
+3. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente (non la stringa "null").
+4. **Formato Data**: Dove richiesto, formatta le date come YYYY-MM-DD, se possibile."""
             else:
                 print(f"ERRORE: Il file template JSON '{args.json_template}' non è stato trovato. Impossibile procedere.")
                 continue # Salta al prossimo file PDF
         else:
-            print("ERRORE: Nessun template JSON fornito. Usa l'argomento --json-template per specificare un file con la struttura desiderata.")
-            # Interrompiamo l'elaborazione di tutti i file se manca il template
-            return
+            print("Flag --no-json-template attivo. L'AI creerà la struttura JSON.")
+            prompt_rules_section = """
+REGOLE IMPORTANTI:
+1. **Crea una Struttura Logica**: Definisci una struttura JSON chiara e gerarchica che organizzi in modo sensato le informazioni del documento.
+2. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente.
+3. **Formato Data**: Dove possibile, formatta le date come YYYY-MM-DD."""
 
         prompt = f"""
-        Sei un assistente esperto nell'estrazione di dati e nella loro conversione in formato JSON.
-
-        Analizza il testo seguente, che proviene da un documento di un prodotto finanziario (come un KIID o un Factsheet), ed estrai le informazioni richieste.
-        Il tuo compito è popolare la struttura JSON fornita con i dati estratti dal testo.
-
-        REGOLE IMPORTANTI:
-        1. **Struttura Esatta**: La tua risposta DEVE seguire esattamente la struttura JSON definita qui sotto. Non aggiungere o rimuovere chiavi.
-        2. **Tipi di Dati**: Rispetta i tipi di dato specificati (string, number). Per i numeri, non usare le virgolette.
-        3. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente (non la stringa "null").
-        4. **Formato Data**: Dove richiesto, formatta le date come YYYY-MM-DD, se possibile.
-        5. **Risposta Pulita**: La tua risposta deve contenere SOLO ed ESCLUSIVAMENTE il codice JSON. Non includere spiegazioni, commenti, o la marcatura ```json.
-
-        ---
-        STRUTTURA JSON DA POPOLARE:
-        {json_structure_description}
-        ---
+        Sei un assistente esperto nell'estrazione di dati da documenti finanziari e nella loro strutturazione in formato JSON.
+        Analizza il testo seguente ed estrai le informazioni chiave.
+        {prompt_rules_section}
+        5. **Risposta Pulita**: La tua risposta deve contenere SOLO ed ESCLUSIVAMENTE il codice JSON. Non includere spiegazioni, commenti, o la marcatura ```json.{prompt_template_section}
         TESTO DEL DOCUMENTO DA ANALIZZARE:
         {pdf_text}
         ---
