@@ -13,7 +13,7 @@
 
 ## Prerequisiti
 
-- Python 3.8 o superiore.
+- Python 3.10 o superiore.
 - Accesso a una o più API key di Google Gemini.
 
 ## Installazione
