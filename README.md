@@ -7,7 +7,8 @@
 - **Conversione da PDF a JSON**: Processa uno o più file PDF da una cartella di input e genera i corrispondenti file JSON in una cartella di output.
 - **Intelligenza Artificiale Gemini**: Sfrutta i modelli generativi di Google (es. `gemini-2.5-flash`) per l'analisi del testo e l'estrazione dei dati.
 - **Struttura JSON Configurabile**: Permette di specificare una struttura JSON desiderata tramite un file di template, guidando l'IA per ottenere un output consistente e prevedibile.
-- **Rotazione Automatica delle API Key**: Supporta l'uso di più API key e le ruota automaticamente in caso di errori (es. limiti di quota raggiunti), aumentando la resilienza dello script.
+- **Estrazione Automatica della Struttura**: In alternativa, può analizzare il documento e proporre autonomamente una struttura JSON logica, senza bisogno di un template predefinito.
+- **Rotazione Automatica delle API Key**: Supporta l'uso di più API key e le ruota automaticamente in caso di errori (es. limiti di quota), aumentando la resilienza dello script.
 - **Configurazione Flessibile**: Gestione delle API key sia tramite argomenti da riga di comando sia tramite un file di configurazione dedicato.
 
 ## Prerequisiti
@@ -54,23 +55,32 @@ Lo script può ottenere le API key di Gemini in due modi (con priorità al primo
 
 ## Utilizzo
 
-Lo script viene eseguito dalla riga di comando. L'argomento più importante è `--json-template`, che definisce la struttura dell'output.
+Lo script viene eseguito dalla riga di comando e offre due modalità principali di funzionamento.
+Prima di eseguirlo, posiziona i file PDF da processare nella cartella `input` (o in un'altra specificata con `--inputPDF`).
 
-1.  **Prepara un file di template JSON**:
-    Crea un file (es. `my_template.json`) che descriva la struttura dati che vuoi estrarre. Usa commenti per specificare i tipi di dato.
+### 1. Con Template JSON (Modalità Consigliata)
 
-2.  **Esegui lo script**:
-    Posiziona i file PDF da processare nella cartella `input` (o in un'altra specificata con `--inputPDF`).
+Fornisci un file di template (`--json-template`) che definisce la struttura esatta del JSON di output. Questo garantisce consistenza e prevedibilità, specialmente quando si processano più documenti dello stesso tipo.
 
-    Comando base:
-    ```bash
-    python src/PDFtoJSON.py --json-template "path/to/your/template.json"
-    ```
+**Comando di esempio:**
+```bash
+python src/PDFtoJSON.py --json-template "path/to/your/template.json"
+```
+
+### 2. Senza Template JSON (Modalità Automatica)
+
+Utilizza il flag `--no-json-template` per lasciare che sia l'IA a definire la struttura JSON più appropriata in base al contenuto del documento. Questa modalità è utile per l'esplorazione iniziale dei dati o quando non si dispone di una struttura fissa.
+
+**Comando di esempio:**
+```bash
+python src/PDFtoJSON.py --no-json-template
+```
 
 ### Argomenti della Riga di Comando
 
 - `--inputPDF`: Percorso della cartella di input contenente i file PDF (default: `input`).
 - `--outputJSON`: Percorso della cartella di output dove salvare i file JSON (default: `output`).
-- `--json-template`: **(Obbligatorio)** Percorso del file contenente la struttura JSON da usare come template per il prompt.
+- `--json-template`: Percorso del file (`.json` o `.txt`) contenente la struttura JSON da usare come template. **Obbligatorio se non si usa `--no-json-template`**.
+- `--no-json-template`: Se attivo, lo script non userà un template e chiederà all'IA di generare una struttura JSON appropriata in base al contenuto del PDF.
 - `--api`: Stringa contenente una o più API key separate da virgola.
 - `--model-name`: Nome del modello Gemini da utilizzare (default: `gemini-2.5-flash`).

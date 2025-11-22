@@ -1,22 +1,49 @@
+"""
+PDFtoJSON.py
+
+Script per estrarre dati strutturati da file PDF e convertirli in formato JSON
+utilizzando l'intelligenza artificiale di Google Gemini.
+
+Funzionalità principali:
+- Processa file PDF da una cartella di input.
+- Utilizza i modelli generativi di Google (es. Gemini) per analizzare il testo.
+- Permette di usare una struttura JSON predefinita (template) per guidare l'estrazione.
+- In alternativa, può generare autonomamente una struttura JSON basata sul contenuto del PDF.
+- Gestisce la rotazione automatica di più API key per aumentare la resilienza.
+"""
+
 import os
 import google.generativeai as genai
 import json
 import argparse
 import fitz  # PyMuPDF
 import re
+from typing import List, Optional, Any
 
 
-# ----- COSTANTI GLOBALI -----
-DEFAULT_MODEL_NAME = "gemini-2.5-flash" # Modello Gemini predefinito.
-
-# ----- Variabili Globali -----
-available_api_keys = []      # Lista API Caricate.
-current_api_key_index = 0    # Indice della API key corrente
-model = None                 # Modello Gemini
-current_chat_session = None  # Variabile globale per la sessione di chat corrente
+# --- COSTANTI GLOBALI ---
+DEFAULT_MODEL_NAME = "gemini-2.5-flash"  # Modello Gemini predefinito.
 
 
-def get_args_parsed_main_updated():
+# --- VARIABILI GLOBALI ---
+# Queste variabili mantengono lo stato durante l'esecuzione dello script.
+
+available_api_keys: List[str] = []      # Lista delle API key disponibili, caricate all'avvio.
+current_api_key_index: int = 0          # Indice della API key attualmente in uso nella lista `available_api_keys`.
+model: Optional[genai.GenerativeModel] = None  # Oggetto del modello Gemini, inizializzato dopo aver configurato l'API key.
+current_chat_session: Optional[Any] = None     # Sessione di chat attiva con Gemini. Viene resettata per ogni file.
+
+
+def get_args_parsed_main_updated() -> argparse.Namespace:
+    """
+    Configura e analizza gli argomenti della riga di comando.
+
+    Definisce gli argomenti che l'utente può passare allo script, come le cartelle
+    di input/output, le API key, il nome del modello e le opzioni per il template JSON.
+
+    Returns:
+        argparse.Namespace: Un oggetto contenente gli argomenti analizzati.
+    """
     parser = argparse.ArgumentParser(
         description="Script per la conversione di un file PDF in un file JSON tramite AI.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -34,11 +61,27 @@ def get_args_parsed_main_updated():
                         help="Percorso della cartella di output per i file JSON.\nDefault: 'output'")
     file_format_group.add_argument("--json-template", type=str,
                         help="Percorso di un file .txt o .json contenente la struttura JSON da usare come template nel prompt.")
+    file_format_group.add_argument("--no-json-template", action='store_true',
+                        help="Se attivo, non include la struttura JSON di esempio nel prompt, ma chiede all'AI di crearne una.")
     parsed_args = parser.parse_args()
     return parsed_args
 
 
-def initialize_api_keys_and_model(args_parsed_main):
+def initialize_api_keys_and_model(args_parsed_main: argparse.Namespace) -> bool:
+    """
+    Inizializza le API key e il modello generativo di Gemini.
+
+    Carica le API key da due possibili fonti: l'argomento `--api` e il file
+    `api_key.txt`. Le chiavi duplicate vengono rimosse.
+    Successivamente, tenta di configurare `genai` con la prima chiave disponibile
+    e di inizializzare il modello specificato.
+
+    Args:
+        args_parsed_main: Gli argomenti parsati dalla riga di comando.
+
+    Returns:
+        bool: True se l'inizializzazione ha successo, False altrimenti.
+    """
     global available_api_keys, current_api_key_index, model
     print("\n--- Inizializzazione API e Modello ---")
     if args_parsed_main.api:
@@ -46,6 +89,8 @@ def initialize_api_keys_and_model(args_parsed_main):
         if keys_from_arg:
             available_api_keys.extend(keys_from_arg)
             print(f"{len(keys_from_arg)} API key(s) fornite tramite argomento --api.")
+
+    # Cerca le API key anche in un file di testo per comodità.
     api_key_file_path = "../api_key.txt"
     if os.path.exists(api_key_file_path):
         with open(api_key_file_path, "r") as f:
@@ -53,13 +98,18 @@ def initialize_api_keys_and_model(args_parsed_main):
             if keys_from_file:
                 available_api_keys.extend(keys_from_file)
                 print(f"{len(keys_from_file)} API key(s) caricate da '{api_key_file_path}'.")
+
+    # Rimuove eventuali duplicati per evitare di usare la stessa chiave più volte.
     seen = set()
     available_api_keys = [x for x in available_api_keys if not (x in seen or seen.add(x))]
+
     if not available_api_keys:
         print("Nessuna API key trovata. Specificare tramite --api o nel file 'api_key.txt'.")
         return False
+
     print(f"Totale API keys uniche disponibili: {len(available_api_keys)}.")
     current_api_key_index = 0
+
     try:
         current_key = available_api_keys[current_api_key_index]
         genai.configure(api_key=current_key)
@@ -73,7 +123,20 @@ def initialize_api_keys_and_model(args_parsed_main):
     finally:
         print("-" * 65)
 
-def rotate_api_key(args_parsed_main):
+def rotate_api_key(args_parsed_main: argparse.Namespace) -> bool:
+    """
+    Passa alla API key successiva nella lista.
+
+    Questa funzione viene chiamata quando la chiave corrente fallisce (es. per limiti
+    di quota). Se sono disponibili altre chiavi, aggiorna l'indice, riconfigura
+    `genai` e reinizializza il modello.
+
+    Args:
+        args_parsed_main: Gli argomenti parsati, necessari per reinizializzare il modello.
+
+    Returns:
+        bool: True se la rotazione ha successo, False se non ci sono altre chiavi o se la nuova chiave fallisce.
+    """
     global current_api_key_index, model
     if len(available_api_keys) <= 1:
         print("Solo una API key disponibile. Impossibile ruotare.")
@@ -81,6 +144,7 @@ def rotate_api_key(args_parsed_main):
     previous_key_index = current_api_key_index
     current_api_key_index = (current_api_key_index + 1) % len(available_api_keys)
     new_api_key = available_api_keys[current_api_key_index]
+
     print(f"Rotazione API key dalla {previous_key_index+1}° alla {current_api_key_index+1}°...")
     try:
         genai.configure(api_key=new_api_key)
@@ -89,6 +153,7 @@ def rotate_api_key(args_parsed_main):
         return True
     except Exception as e:
         print(f"ERRORE: Configurazione nuova API Key fallita: {e}")
+        # Se la nuova chiave non funziona, si tenta di ripristinare la precedente.
         current_api_key_index = previous_key_index
         try:
             genai.configure(api_key=available_api_keys[previous_key_index])
@@ -98,7 +163,20 @@ def rotate_api_key(args_parsed_main):
              print(f"Errore nel ripristino della API Key precedente: {e_revert}")
         return False
 
-def start_gemini_chat(initial_prompt: str, max_attempts: int = 3) -> str | None:
+def start_gemini_chat(initial_prompt: str, max_attempts: int = 3) -> Optional[str]:
+    """
+    Inizia una nuova sessione di chat con Gemini e invia il prompt iniziale.
+
+    Include una logica di tentativi multipli. Se una richiesta fallisce,
+    tenta di ruotare l'API key e riprovare.
+
+    Args:
+        initial_prompt: Il prompt da inviare a Gemini per iniziare la conversazione.
+        max_attempts: Il numero massimo di tentativi prima di arrendersi.
+
+    Returns:
+        Optional[str]: La risposta testuale di Gemini se la richiesta ha successo, altrimenti None.
+    """
     global model, current_chat_session
     if model is None:
         print("Errore: Il modello Gemini non è stato inizializzato. Impossibile avviare la chat.")
@@ -113,6 +191,7 @@ def start_gemini_chat(initial_prompt: str, max_attempts: int = 3) -> str | None:
             return response.text
         except Exception as e:
             print(f"Errore durante la comunicazione con Gemini: {e}")
+            # Se ci sono più chiavi e non si è all'ultimo tentativo, si prova a ruotare.
             if len(available_api_keys) > 1 and attempt < max_attempts - 1:
                 print("Tentativo di rotazione della API key...")
                 if rotate_api_key(get_args_parsed_main_updated()):
@@ -128,7 +207,23 @@ def start_gemini_chat(initial_prompt: str, max_attempts: int = 3) -> str | None:
     return None # Tutti i tentativi sono falliti
 
 
-def continue_gemini_chat(message: str, args, max_attempts: int = 3) -> str | None:
+def continue_gemini_chat(message: str, args: argparse.Namespace, max_attempts: int = 3) -> Optional[str]:
+    """
+    Continua una sessione di chat esistente inviando un nuovo messaggio.
+
+    Questa funzione non è attualmente utilizzata nel flusso principale (che usa
+    `start_gemini_chat` per ogni file), ma è mantenuta per usi futuri in cui
+    potrebbe essere necessaria una conversazione a più turni.
+    Include la stessa logica di tentativi e rotazione API di `start_gemini_chat`.
+
+    Args:
+        message: Il messaggio da inviare nella chat corrente.
+        args: Gli argomenti parsati, necessari per la rotazione della chiave.
+        max_attempts: Il numero massimo di tentativi.
+
+    Returns:
+        Optional[str]: La risposta testuale di Gemini, o None in caso di fallimento.
+    """
     global current_chat_session, model
 
     if current_chat_session is None:
@@ -150,6 +245,8 @@ def continue_gemini_chat(message: str, args, max_attempts: int = 3) -> str | Non
                 print("Tentativo di rotazione della API key...")
                 if rotate_api_key(get_args_parsed_main_updated()):
                     print("API Key ruotata con successo. Riprovo la chat.")
+                    # Dopo la rotazione, il modello viene reinizializzato. È necessario
+                    # riavviare la chat, possibilmente ripristinando la cronologia.
                     if current_chat_session and hasattr(current_chat_session, 'history'):
                         temp_history = list(current_chat_session.history)
                         current_chat_session = model.start_chat(history=temp_history)
@@ -168,7 +265,13 @@ def continue_gemini_chat(message: str, args, max_attempts: int = 3) -> str | Non
     return None # Tutti i tentativi sono falliti
 
 
-def end_gemini_chat():
+def end_gemini_chat() -> None:
+    """
+    Termina la sessione di chat corrente.
+
+    Resetta la variabile globale `current_chat_session` a None. Questo assicura
+    che ogni file PDF venga processato in una sessione di chat pulita e indipendente.
+    """
     global current_chat_session
     if current_chat_session is not None:
         current_chat_session = None
@@ -177,9 +280,15 @@ def end_gemini_chat():
         print("\nNessuna sessione di chat Gemini attiva da terminare.")
 
 
-def process_pdf_to_json(args):
+def process_pdf_to_json(args: argparse.Namespace) -> None:
     """
-    Funzione principale che orchestra il processo di conversione da PDF a JSON.
+    Orchestra il processo di conversione da PDF a JSON per tutti i file nella cartella di input.
+
+    Per ogni file PDF:
+    1. Estrae il testo.
+    2. Costruisce un prompt per Gemini, includendo o meno un template JSON.
+    3. Invia il prompt e riceve una risposta.
+    4. Pulisce e valida la risposta JSON, quindi la salva su file.
     """
     input_dir = args.inputPDF
     output_dir = args.outputJSON
@@ -188,6 +297,7 @@ def process_pdf_to_json(args):
         print(f"ERRORE: La cartella di input '{input_dir}' non esiste.")
         return
 
+    # Crea la cartella di output se non esiste.
     os.makedirs(output_dir, exist_ok=True)
 
     pdf_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.pdf')]
@@ -204,6 +314,7 @@ def process_pdf_to_json(args):
 
         print(f"\n--- Processo il file: {pdf_file} ---")
 
+        # Estrazione del testo dal PDF usando PyMuPDF (fitz).
         try:
             with fitz.open(pdf_path) as doc:
                 pdf_text = "".join(page.get_text() for page in doc)
@@ -211,66 +322,85 @@ def process_pdf_to_json(args):
             print(f"Errore durante la lettura del file PDF '{pdf_file}': {e}")
             continue # Salta al prossimo file
 
-        # Carica la struttura JSON dal file template, se specificato
+        # --- Costruzione dinamica del prompt per Gemini ---
         json_structure_description = ""
-        if args.json_template:
+        prompt_template_section = ""
+        prompt_rules_section = ""
+
+        if not args.no_json_template:
+            # Modalità 1: Utilizzo di un template JSON fornito dall'utente.
+            if not args.json_template:
+                print("ERRORE: Nessun template JSON fornito. Usa l'argomento --json-template o attiva --no-json-template.")
+                return # Interrompe l'elaborazione di tutti i file.
+
             if os.path.exists(args.json_template):
                 with open(args.json_template, 'r', encoding='utf-8') as f:
                     json_structure_description = f.read()
                 print(f"Utilizzo della struttura JSON dal template: {args.json_template}")
+                prompt_template_section = f"""
+---
+STRUTTURA JSON DA POPOLARE:
+{json_structure_description}
+---"""
+                prompt_rules_section = """
+REGOLE IMPORTANTI:
+1. **Struttura Esatta**: La tua risposta DEVE seguire esattamente la struttura JSON definita. Non aggiungere o rimuovere chiavi.
+2. **Tipi di Dati**: Rispetta i tipi di dato specificati (string, number). Per i numeri, non usare le virgolette.
+3. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente (non la stringa "null").
+4. **Formato Data**: Dove richiesto, formatta le date come YYYY-MM-DD, se possibile."""
             else:
                 print(f"ERRORE: Il file template JSON '{args.json_template}' non è stato trovato. Impossibile procedere.")
                 continue # Salta al prossimo file PDF
         else:
-            print("ERRORE: Nessun template JSON fornito. Usa l'argomento --json-template per specificare un file con la struttura desiderata.")
-            # Interrompiamo l'elaborazione di tutti i file se manca il template
-            return
+            # Modalità 2: L'IA deve generare autonomamente la struttura JSON.
+            print("Flag --no-json-template attivo. L'AI creerà la struttura JSON.")
+            prompt_rules_section = """
+REGOLE IMPORTANTI:
+1. **Crea una Struttura Logica**: Definisci una struttura JSON chiara e gerarchica che organizzi in modo sensato le informazioni del documento.
+2. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente.
+3. **Formato Data**: Dove possibile, formatta le date come YYYY-MM-DD."""
 
+        # Assemblaggio del prompt finale.
         prompt = f"""
-        Sei un assistente esperto nell'estrazione di dati e nella loro conversione in formato JSON.
-
-        Analizza il testo seguente, che proviene da un documento di un prodotto finanziario (come un KIID o un Factsheet), ed estrai le informazioni richieste.
-        Il tuo compito è popolare la struttura JSON fornita con i dati estratti dal testo.
-
-        REGOLE IMPORTANTI:
-        1. **Struttura Esatta**: La tua risposta DEVE seguire esattamente la struttura JSON definita qui sotto. Non aggiungere o rimuovere chiavi.
-        2. **Tipi di Dati**: Rispetta i tipi di dato specificati (string, number). Per i numeri, non usare le virgolette.
-        3. **Dati Mancanti**: Se un'informazione non è presente nel testo, usa il valore `null` per la chiave corrispondente (non la stringa "null").
-        4. **Formato Data**: Dove richiesto, formatta le date come YYYY-MM-DD, se possibile.
-        5. **Risposta Pulita**: La tua risposta deve contenere SOLO ed ESCLUSIVAMENTE il codice JSON. Non includere spiegazioni, commenti, o la marcatura ```json.
-
-        ---
-        STRUTTURA JSON DA POPOLARE:
-        {json_structure_description}
-        ---
+        Sei un assistente esperto nell'estrazione di dati da documenti finanziari e nella loro strutturazione in formato JSON.
+        Analizza il testo seguente ed estrai le informazioni chiave.
+        {prompt_rules_section}
+        5. **Risposta Pulita**: La tua risposta deve contenere SOLO ed ESCLUSIVAMENTE il codice JSON. Non includere spiegazioni, commenti, o la marcatura ```json.{prompt_template_section}
         TESTO DEL DOCUMENTO DA ANALIZZARE:
         {pdf_text}
         ---
         """
 
+        # Invia il prompt a Gemini e ottiene la risposta.
         json_response_text = start_gemini_chat(prompt)
-        end_gemini_chat() # Termina la chat per processare ogni file indipendentemente
+        end_gemini_chat() # Termina la chat per processare ogni file in modo indipendente.
 
         if json_response_text:
-            # Pulisce la risposta per estrarre solo il JSON
-            # IA dovrebbe restituire solo JSON, ma teniamo il cleaning per sicurezza.
+            # --- Pulizia e Parsing della risposta JSON ---
+            # L'IA dovrebbe restituire solo JSON, ma per robustezza si tenta di estrarlo
+            # da blocchi di codice markdown (```json ... ```) o da oggetti JSON grezzi.
             match = re.search(r'```json\s*([\s\S]*?)\s*```|({[\s\S]*})', json_response_text)
             if match:
-                # Prendi il primo gruppo non nullo (o il contenuto del ```json``` o il JSON stesso)
+                # `match.groups()` contiene i risultati delle catture. Si cerca il primo
+                # gruppo che non è None, che corrisponderà o al contenuto del blocco
+                # markdown o all'oggetto JSON.
                 json_data_str = next((g for g in match.groups() if g is not None), json_response_text)
             else:
-                json_data_str = json_response_text # Prova a usare la risposta così com'è
+                # Se la regex non trova corrispondenze, si assume che l'intera risposta sia il JSON.
+                json_data_str = json_response_text
 
+            # Rimuove spazi bianchi o newline iniziali/finali.
             json_data_str = json_data_str.strip()
 
             try:
+                # Tenta di parsare la stringa pulita in un oggetto JSON Python.
                 json_data = json.loads(json_data_str)
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(json_data, f, indent=4, ensure_ascii=False)
                 print(f"File JSON salvato con successo in: {json_path}")
             except json.JSONDecodeError:
                 print(f"ERRORE: La risposta da Gemini per '{pdf_file}' non è un JSON valido.")
-                # Opzionale: salva la risposta grezza per il debug
+                # Salva la risposta grezza in un file di errore per il debug.
                 with open(json_path + ".error.txt", 'w', encoding='utf-8') as f:
                     f.write(json_response_text)
         else:
@@ -278,8 +408,13 @@ def process_pdf_to_json(args):
 
 
 if __name__ == "__main__":
+    # Punto di ingresso dello script.
+    # 1. Analizza gli argomenti della riga di comando.
     args = get_args_parsed_main_updated()
+
+    # 2. Inizializza le API key e il modello. Se fallisce, lo script termina.
     if initialize_api_keys_and_model(args):
+        # 3. Avvia il processo principale di elaborazione dei PDF.
         process_pdf_to_json(args)
     else:
         print("Impossibile procedere senza un'inizializzazione valida dell'API Gemini.")
