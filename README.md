@@ -5,7 +5,7 @@
 ## Funzionalità Principali
 
 - **Conversione da PDF a JSON**: Processa uno o più file PDF da una cartella di input e genera i corrispondenti file JSON in una cartella di output.
-- **Intelligenza Artificiale Gemini**: Sfrutta i modelli generativi di Google (es. `gemini-1.5-flash`) per l'analisi del testo e l'estrazione dei dati.
+- **Intelligenza Artificiale Gemini**: Sfrutta i modelli generativi di Google (es. `gemini-2.5-flash`) per l'analisi del testo e l'estrazione dei dati.
 - **Struttura JSON Configurabile**: Permette di specificare una struttura JSON desiderata tramite un file di template, guidando l'IA per ottenere un output consistente e prevedibile.
 - **Rotazione Automatica delle API Key**: Supporta l'uso di più API key e le ruota automaticamente in caso di errori (es. limiti di quota raggiunti), aumentando la resilienza dello script.
 - **Configurazione Flessibile**: Gestione delle API key sia tramite argomenti da riga di comando sia tramite un file di configurazione dedicato.
@@ -73,8 +73,4 @@ Lo script viene eseguito dalla riga di comando. L'argomento più importante è `
 - `--outputJSON`: Percorso della cartella di output dove salvare i file JSON (default: `output`).
 - `--json-template`: **(Obbligatorio)** Percorso del file contenente la struttura JSON da usare come template per il prompt.
 - `--api`: Stringa contenente una o più API key separate da virgola.
-- `--model-name`: Nome del modello Gemini da utilizzare (default: `gemini-1.5-flash`).
-
-## Licenza
-
-Questo progetto è rilasciato sotto la licenza GNU General Public License v3.0. Vedi il file `LICENSE` per maggiori dettagli.
+- `--model-name`: Nome del modello Gemini da utilizzare (default: `gemini-2.5-flash`).
